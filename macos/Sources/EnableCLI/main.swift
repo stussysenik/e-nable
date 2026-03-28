@@ -247,7 +247,10 @@ func runStreamingPipeline() async throws {
 
         let greyData = toGreyscale(bgra: bgraData, width: captureWidth, height: captureHeight)
 
-        let isKeyframe = (frameCount == 0) || (frameCount % 30 == 0)
+        // All frames are keyframes until Zig delta encoding is wired.
+        // Without actual XOR delta, every frame is a full greyscale buffer —
+        // if we send them as "delta", the browser XORs them and gets garbage.
+        let isKeyframe = true
         do {
             try await streamer.sendFrame(data: greyData, isKeyframe: isKeyframe, isColor: false)
         } catch {
