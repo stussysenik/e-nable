@@ -164,87 +164,73 @@ func extractBGRA(from surface: IOSurface, width: Int, height: Int) -> Data? {
 
 // MARK: - Main Pipeline
 
-/// Main async pipeline: capture -> greyscale -> stream to Elixir.
+/// Main async pipeline: capture main display -> greyscale -> stream to Elixir.
+///
+/// This captures the PRIMARY display (no virtual display needed).
+/// The virtual display + compositor pacer will be wired in later once
+/// we solve the CGVirtualDisplay private API loading on Mac Studio.
 func runStreamingPipeline() async throws {
     let options = parseArguments()
-    let preset = options.preset
 
     print("╔══════════════════════════════════════════════════╗")
     print("║          e-nable capture -> server               ║")
     print("╚══════════════════════════════════════════════════╝")
     print()
-    print("[EnableCLI] Preset:   \(preset.displayName)")
-    print("[EnableCLI] Resolution: \(preset.width) x \(preset.height)")
+    print("[EnableCLI] Mode:     Main display capture")
     print("[EnableCLI] Server:   \(options.host):\(options.port)")
     print("[EnableCLI] Duration: \(Int(options.duration))s")
     print()
 
-    // -- Step 1: Virtual Display -----------------------------------------------
-    print("[1/5] Creating virtual display...")
-    let display: VirtualDisplay
-    do {
-        display = try VirtualDisplay(preset: preset)
-    } catch {
-        print("  FAILED: \(error.localizedDescription)")
-        print("  Note: CGVirtualDisplay requires macOS 14+ and SIP may block dlsym.")
-        throw error
-    }
-    print("  OK  Display ID: \(display.displayID)")
-    print()
-
-    // -- Step 2: Compositor Pacer -----------------------------------------------
-    print("[2/5] Starting compositor pacer...")
-    let pacer: CompositorPacer
-    do {
-        pacer = try CompositorPacer(displayID: display.displayID)
-    } catch {
-        display.teardown()
-        print("  FAILED: \(error.localizedDescription)")
-        throw error
-    }
-    print("  OK  4x4 px pacer window placed on virtual display")
-    print()
-
-    // -- Step 3: Connect to Elixir Server ---------------------------------------
-    print("[3/5] Connecting to Elixir server at \(options.host):\(options.port)...")
+    // -- Step 1: Connect to Elixir Server ---------------------------------------
+    print("[1/3] Connecting to Elixir server at \(options.host):\(options.port)...")
     let streamer = FrameStreamer(host: options.host, port: options.port)
     do {
         try await streamer.connect()
     } catch {
-        pacer.stop()
-        display.teardown()
         print("  FAILED: \(error.localizedDescription)")
         print("  Is the Elixir server running? Start it with: cd server && mix phx.server")
         throw error
     }
-    print("  OK  TCP connection established (TCP_NODELAY enabled)")
+    print("  OK  TCP connection established")
     print()
 
-    // -- Step 4: Start Frame Capture --------------------------------------------
-    print("[4/5] Starting frame capture (2 fps)...")
+    // -- Step 2: Start Frame Capture (main display) -----------------------------
+    print("[2/3] Starting frame capture on main display...")
+
+    // Use ScreenCaptureKit to find and capture the main display.
+    // FrameProducer with displayID 0 means "use the main display".
+    let mainDisplayID = CGMainDisplayID()
+    let displayWidth = CGDisplayPixelsWide(mainDisplayID)
+    let displayHeight = CGDisplayPixelsHigh(mainDisplayID)
+
+    // For e-ink, capture at reduced resolution (1/2 for performance).
+    let captureWidth = min(displayWidth, 1240)
+    let captureHeight = min(displayHeight, 930)
+
+    print("  Main display: \(displayWidth)x\(displayHeight) (capturing at \(captureWidth)x\(captureHeight))")
+
     let producer: FrameProducer
     do {
         producer = try await FrameProducer(
-            displayID: display.displayID,
-            width: preset.width,
-            height: preset.height,
-            frameRate: 2
+            displayID: mainDisplayID,
+            width: captureWidth,
+            height: captureHeight,
+            frameRate: 5
         )
     } catch {
         await streamer.disconnect()
-        pacer.stop()
-        display.teardown()
         print("  FAILED: \(error.localizedDescription)")
+        print("  Grant Screen Recording permission: System Settings > Privacy > Screen Recording")
         throw error
     }
 
     try await producer.start()
-    print("  OK  ScreenCaptureKit stream active")
+    print("  OK  ScreenCaptureKit stream active (5 fps)")
     print()
 
-    // -- Step 5: Capture -> Greyscale -> Stream Loop ----------------------------
-    print("[5/5] Streaming frames to server (Ctrl-C to stop)...")
-    print("  Format: greyscale \(preset.width)x\(preset.height) (\(preset.width * preset.height) bytes/frame)")
+    // -- Step 3: Capture -> Greyscale -> Stream Loop ----------------------------
+    print("[3/3] Streaming frames to server (Ctrl-C to stop)...")
+    print("  Format: greyscale \(captureWidth)x\(captureHeight) (\(captureWidth * captureHeight) bytes/frame)")
     print()
 
     var frameCount = 0
@@ -253,42 +239,34 @@ func runStreamingPipeline() async throws {
     let deadline = startTime.addingTimeInterval(options.duration)
 
     for await frame in producer.frames {
-        // Skip frames without pixel data (status-only frames from SCK).
         guard let surface = frame.surface else { continue }
 
-        // Extract BGRA pixel data from the IOSurface.
-        guard let bgraData = extractBGRA(from: surface, width: preset.width, height: preset.height) else {
-            print("  WARN: Could not read IOSurface for frame \(frameCount + 1)")
+        guard let bgraData = extractBGRA(from: surface, width: captureWidth, height: captureHeight) else {
             continue
         }
 
-        // Convert BGRA -> greyscale (temporary Swift impl, Zig FFI later).
-        let greyData = toGreyscale(bgra: bgraData, width: preset.width, height: preset.height)
+        let greyData = toGreyscale(bgra: bgraData, width: captureWidth, height: captureHeight)
 
-        // Stream to Elixir server. First frame is always a keyframe.
-        let isKeyframe = (frameCount == 0)
+        let isKeyframe = (frameCount == 0) || (frameCount % 30 == 0)
         do {
             try await streamer.sendFrame(data: greyData, isKeyframe: isKeyframe, isColor: false)
         } catch {
-            print("  ERROR: Send failed on frame \(frameCount + 1): \(error.localizedDescription)")
-            print("  Connection may have been lost. Stopping.")
+            print("  ERROR: Send failed: \(error.localizedDescription)")
             break
         }
 
         frameCount += 1
         bytesSent += UInt64(greyData.count)
 
-        // Print periodic status every 10 frames.
         if frameCount % 10 == 0 || frameCount == 1 {
             let elapsed = Date().timeIntervalSince(startTime)
             let fps = elapsed > 0 ? Double(frameCount) / elapsed : 0
             let mbSent = Double(bytesSent) / (1024 * 1024)
-            print("  [\(String(format: "%6.1f", elapsed))s] frames=\(frameCount)  fps=\(String(format: "%.1f", fps))  sent=\(String(format: "%.1f", mbSent)) MB  seq=\(await streamer.framesSent)")
+            print("  [\(String(format: "%5.1f", elapsed))s] frames=\(frameCount)  fps=\(String(format: "%.1f", fps))  sent=\(String(format: "%.1f", mbSent)) MB")
         }
 
         if Date() >= deadline {
-            print()
-            print("  Duration limit reached (\(Int(options.duration))s).")
+            print("\n  Duration limit reached (\(Int(options.duration))s).")
             break
         }
     }
@@ -296,8 +274,6 @@ func runStreamingPipeline() async throws {
     // -- Cleanup ---------------------------------------------------------------
     await producer.stop()
     await streamer.disconnect()
-    pacer.stop()
-    display.teardown()
 
     let totalElapsed = Date().timeIntervalSince(startTime)
     let avgFps = totalElapsed > 0 ? Double(frameCount) / totalElapsed : 0
@@ -312,8 +288,6 @@ func runStreamingPipeline() async throws {
     print("║  Data sent:        \(String(format: "%-26.2f", totalMB)) MB ║")
     print("║  Duration:         \(String(format: "%-27.1f", totalElapsed)) s ║")
     print("╚══════════════════════════════════════════════════╝")
-    print()
-    print("[EnableCLI] Pipeline: VirtualDisplay -> Pacer -> Capture -> Greyscale -> TCP -> Elixir")
 }
 
 // -- Run --------------------------------------------------------------------
