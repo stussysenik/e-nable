@@ -122,6 +122,7 @@
 
   /** Last known sequence number for detecting dropped frames. */
   var lastSeq = -1;
+  var frameCount = 0;
 
   /* ========================================================================
    * WEBSOCKET CONNECTION
@@ -272,6 +273,15 @@
     var height = view.getUint16(9, true);
 
     var isKeyframe = (flags & FLAG_KEYFRAME) !== 0;
+
+    // Debug: log first frame and every 30th frame
+    if (frameCount === 0 || frameCount % 30 === 0) {
+      console.log("[mirror] Frame #" + seq + ": " + width + "x" + height +
+        (isKeyframe ? " KEYFRAME" : " delta") +
+        " payload=" + (buffer.byteLength - HEADER_SIZE) + " bytes" +
+        " total=" + buffer.byteLength + " bytes");
+    }
+    frameCount++;
 
     /*
      * Extract payload as a Uint8Array view into the original buffer.

@@ -96,13 +96,22 @@ defmodule EnableWeb.MirrorWs do
 
   # Build the 11-byte binary header matching the wire protocol.
   #
-  # Format: [magic:2] [flags:1] [seq:4 LE] [width:2 LE] [height:2 LE]
+  # Format: [magic:2] [flags:1] [seq:4 LE] [width:2 LE] [height:2 LE] = 11 bytes
   #
-  # The browser client (mirror.js) parses this exact format.
+  # The browser client (mirror.js) parses this exact format at these offsets:
+  #   offset 0: magic 0xDA 0x7E
+  #   offset 2: flags (1 byte)
+  #   offset 3: sequence (4 bytes LE)
+  #   offset 7: width (2 bytes LE)
+  #   offset 9: height (2 bytes LE)
+  #   offset 11: payload starts
+  #
+  # NOTE: FrameIngress metadata uses keys :seq, :keyframe, :color_mode
+  #       (not :sequence, :color, :width, :height)
   defp build_header(meta) do
     flags = if meta[:keyframe], do: 0x01, else: 0x00
-    flags = if meta[:color], do: Bitwise.bor(flags, 0x02), else: flags
-    seq = meta[:sequence] || 0
+    flags = if meta[:color_mode], do: Bitwise.bor(flags, 0x02), else: flags
+    seq = meta[:seq] || 0
     width = meta[:width] || 1240
     height = meta[:height] || 930
 

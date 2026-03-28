@@ -305,10 +305,23 @@ defmodule Enable.FrameIngress do
   defp handle_frame(frame, state) do
     payload_size = byte_size(frame.payload)
 
+    # Derive width/height from payload size (greyscale = 1 byte/pixel).
+    # The Swift capture sends 1240x930 = 1,153,200 bytes.
+    {width, height} =
+      cond do
+        payload_size == 1_153_200 -> {1240, 930}
+        payload_size == 4_612_800 -> {2480, 1860}
+        payload_size == 786_432 -> {1024, 768}
+        payload_size == 480_000 -> {800, 600}
+        true -> {1240, 930}
+      end
+
     metadata = %{
       seq: frame.seq,
       keyframe: frame.keyframe,
       color_mode: frame.color_mode,
+      width: width,
+      height: height,
       timestamp: System.system_time(:millisecond),
       size: payload_size
     }
