@@ -22,6 +22,12 @@ defmodule EnableWeb.Endpoint do
     websocket: [timeout: :infinity],
     longpoll: false
 
+  # Raw WebSocket for binary frame streaming to browser viewers.
+  # This bypasses Phoenix Channels to avoid JSON encoding overhead
+  # on binary frame data. The browser client at /mirror.html connects here.
+  socket "/ws/mirror", EnableWeb.MirrorWs,
+    websocket: [timeout: :infinity]
+
   # Serve at "/" the static files from "priv/static" directory.
   #
   # When code reloading is disabled (e.g., in production),
