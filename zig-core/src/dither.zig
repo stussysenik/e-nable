@@ -114,70 +114,155 @@ pub fn quantizeToSixteen(value: u8) u8 {
 /// # Errors
 ///   - Returns `error.OutOfMemory` if the error buffer cannot be allocated
 pub fn atkinsonDither(pixels: []u8, width: u32, height: u32, alloc: Allocator) !void {
-    const total: usize = @as(usize, width) * @as(usize, height);
+    const w: usize = @intCast(width);
+    const h: usize = @intCast(height);
+    const total: usize = w * h;
     if (total == 0) return;
     if (pixels.len < total) return;
 
-    // Allocate i16 buffer to accumulate error without clamping prematurely.
-    // i16 range [-32768, 32767] comfortably holds pixel values + diffused error.
+    // ── Compile-time quantization LUT ───────────────────────────────
+    //
+    // Eliminates the integer division by 17 in the hot loop. A single
+    // table lookup replaces: clamp → promote → add 8 → divide → multiply → clamp.
+    const quant_lut = comptime blk: {
+        var lut: [256]u8 = undefined;
+        for (0..256) |i| {
+            const q: u16 = (@as(u16, i) + 8) / 17 * 17;
+            lut[i] = @intCast(@min(q, 255));
+        }
+        break :blk lut;
+    };
+
+    // ── Full-frame i16 error buffer ─────────────────────────────────
+    //
+    // We use a full-frame buffer for simplicity and to let the compiler
+    // generate optimal code for the interior loop. At 1240x930 * 2 bytes
+    // = 2.3 MB, this fits in L2 cache on Apple Silicon.
     const buf = try alloc.alloc(i16, total);
     defer alloc.free(buf);
 
-    // Copy input pixels into the i16 buffer
-    for (buf, 0..) |*b, i| {
-        b.* = @as(i16, pixels[i]);
+    // Copy input pixels into the i16 buffer (single pass)
+    for (buf, pixels[0..total]) |*b, px| {
+        b.* = @as(i16, px);
     }
 
-    const w: usize = @intCast(width);
-    const h: usize = @intCast(height);
+    // ── Pre-compute row stride offsets for Atkinson neighbors ───────
+    //
+    // Atkinson pattern relative to pixel at flat index `idx`:
+    //         [*]  [+1]  [+2]
+    //   [+w-1] [+w] [+w+1]
+    //          [+2w]
+    //
+    // For the interior loop (where all neighbors are in-bounds), we use
+    // these as direct offsets into the flat buffer.
+    const w_i: isize = @intCast(w);
 
-    // Process pixels in scanline order (top-to-bottom, left-to-right)
-    for (0..h) |y| {
+    // ── Process interior rows (y = 0 .. h-3) ────────────────────────
+    //
+    // For rows where y+2 < h, we can safely access row y+1 and y+2.
+    // Within each such row, we split into:
+    //   - left border (x=0): skip (x-1,y+1) neighbor
+    //   - interior (x=1 .. w-3): all 6 neighbors guaranteed in-bounds
+    //   - right border (x=w-2 .. w-1): some right neighbors out of bounds
+    const interior_rows = if (h > 2) h - 2 else 0;
+
+    for (0..interior_rows) |y| {
+        const row_base = y * w;
+        const buf_row = buf[row_base..];
+
+        // Left border: x = 0
+        {
+            const val = std.math.clamp(buf_row[0], 0, 255);
+            const clamped: u8 = @intCast(val);
+            const quantized = quant_lut[clamped];
+            pixels[row_base] = quantized;
+            const diffused: i16 = @divTrunc(@as(i16, clamped) - @as(i16, quantized), 8);
+
+            if (diffused != 0) {
+                buf_row[1] += diffused; // (1, y)
+                if (w > 2) buf_row[2] += diffused; // (2, y)
+                // skip (-1, y+1) — out of bounds
+                buf[row_base + w] += diffused; // (0, y+1)
+                buf[row_base + w + 1] += diffused; // (1, y+1)
+                buf[row_base + 2 * w] += diffused; // (0, y+2)
+            }
+        }
+
+        // Interior: x = 1 .. w-3 (all 6 neighbors in-bounds, no branches)
+        if (w > 3) {
+            const interior_end = w - 2;
+            var x: usize = 1;
+            while (x < interior_end) : (x += 1) {
+                const idx = row_base + x;
+                const val = std.math.clamp(buf[idx], 0, 255);
+                const clamped: u8 = @intCast(val);
+                const quantized = quant_lut[clamped];
+                pixels[idx] = quantized;
+                const diffused: i16 = @divTrunc(@as(i16, clamped) - @as(i16, quantized), 8);
+
+                // Branchless: if diffused is 0 (exact level), skip all 6 stores.
+                // This is common for already-quantized content.
+                if (diffused != 0) {
+                    const p: [*]i16 = buf.ptr + idx;
+                    p[1] += diffused; // (x+1, y)
+                    p[2] += diffused; // (x+2, y)
+                    (p + @as(usize, @intCast(w_i - 1)))[0] += diffused; // (x-1, y+1)
+                    (p + @as(usize, @intCast(w_i)))[0] += diffused; // (x, y+1)
+                    (p + @as(usize, @intCast(w_i + 1)))[0] += diffused; // (x+1, y+1)
+                    (p + @as(usize, @intCast(2 * w_i)))[0] += diffused; // (x, y+2)
+                }
+            }
+        }
+
+        // Right border: x = max(1, w-2) .. w-1
+        {
+            const right_start: usize = if (w > 3) w - 2 else @min(w, 1);
+            for (right_start..w) |x| {
+                const idx = row_base + x;
+                const val = std.math.clamp(buf[idx], 0, 255);
+                const clamped: u8 = @intCast(val);
+                const quantized = quant_lut[clamped];
+                pixels[idx] = quantized;
+                const diffused: i16 = @divTrunc(@as(i16, clamped) - @as(i16, quantized), 8);
+
+                if (diffused != 0) {
+                    if (x + 1 < w) buf[idx + 1] += diffused;
+                    if (x + 2 < w) buf[idx + 2] += diffused;
+                    buf[idx + w - 1] += diffused; // (x-1, y+1) — x >= 1 here
+                    buf[idx + w] += diffused; // (x, y+1)
+                    if (x + 1 < w) buf[idx + w + 1] += diffused;
+                    buf[idx + 2 * w] += diffused; // (x, y+2)
+                }
+            }
+        }
+    }
+
+    // ── Process bottom border rows (y = h-2, h-1) ──────────────────
+    //
+    // These rows need bounds checking for y+1 and y+2 neighbors.
+    const bottom_start = interior_rows;
+    for (bottom_start..h) |y| {
+        const row_base = y * w;
+        const has_row1 = y + 1 < h;
+        const has_row2 = y + 2 < h;
+
         for (0..w) |x| {
-            const idx = y * w + x;
-
-            // Clamp accumulated value to valid pixel range before quantizing
-            const clamped: u8 = @intCast(std.math.clamp(buf[idx], 0, 255));
-            const quantized: u8 = quantizeToSixteen(clamped);
-
-            // Write the final quantized pixel
+            const idx = row_base + x;
+            const val = std.math.clamp(buf[idx], 0, 255);
+            const clamped: u8 = @intCast(val);
+            const quantized = quant_lut[clamped];
             pixels[idx] = quantized;
+            const diffused: i16 = @divTrunc(@as(i16, clamped) - @as(i16, quantized), 8);
 
-            // Error = what we wanted - what we got
-            const err: i16 = @as(i16, clamped) - @as(i16, quantized);
-
-            // Distribute error/8 to each of 6 Atkinson neighbors (bounds-checked).
-            // Using integer division: err/8 truncates toward zero, which is fine —
-            // the slight loss contributes to Atkinson's characteristic crispness.
-            const diffused: i16 = @divTrunc(err, 8);
-
-            // Neighbor offsets for Atkinson pattern:
-            //         [*] [1] [2]
-            //     [3] [4] [5]
-            //         [6]
-            //
-            // (dx, dy) pairs:
-            const neighbors = [_][2]i32{
-                .{ 1, 0 }, // right
-                .{ 2, 0 }, // two right
-                .{ -1, 1 }, // below-left
-                .{ 0, 1 }, // below
-                .{ 1, 1 }, // below-right
-                .{ 0, 2 }, // two below
-            };
-
-            for (neighbors) |offset| {
-                const nx_i32: i32 = @as(i32, @intCast(x)) + offset[0];
-                const ny_i32: i32 = @as(i32, @intCast(y)) + offset[1];
-
-                // Bounds check: skip if neighbor falls outside the image
-                if (nx_i32 < 0 or nx_i32 >= @as(i32, @intCast(w))) continue;
-                if (ny_i32 < 0 or ny_i32 >= @as(i32, @intCast(h))) continue;
-
-                const nx: usize = @intCast(nx_i32);
-                const ny: usize = @intCast(ny_i32);
-                const nidx = ny * w + nx;
-                buf[nidx] += diffused;
+            if (diffused != 0) {
+                if (x + 1 < w) buf[idx + 1] += diffused;
+                if (x + 2 < w) buf[idx + 2] += diffused;
+                if (has_row1) {
+                    if (x > 0) buf[idx + w - 1] += diffused;
+                    buf[idx + w] += diffused;
+                    if (x + 1 < w) buf[idx + w + 1] += diffused;
+                }
+                if (has_row2) buf[idx + 2 * w] += diffused;
             }
         }
     }
