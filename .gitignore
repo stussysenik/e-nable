@@ -1,0 +1,47 @@
+# macOS
+.DS_Store
+*.swp
+*.swo
+
+# Xcode / Swift
+.build/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.xcuserstate
+
+# Zig
+zig-cache/
+zig-out/
+.zig-cache/
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+*.aab
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Superpowers brainstorming sessions
+.superpowers/
+
+# Environment
+.env
+.env.local
+
+# Build artifacts
+dist/
+*.dmg
+*.dylib
+*.so
+*.a
