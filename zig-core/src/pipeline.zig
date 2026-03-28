@@ -25,10 +25,11 @@
 ///
 /// We approximate this with integer arithmetic (no floating point needed):
 ///
-///   Y = (R * 54 + G * 183 + B * 18) >> 8
+///   Y = (R * 54 + G * 183 + B * 19 + 128) >> 8
 ///
-/// The coefficients 54/256=0.2109, 183/256=0.7148, 18/256=0.0703 are
-/// within 0.3% of the BT.709 specification — imperceptible on e-ink.
+/// The coefficients 54/256=0.2109, 183/256=0.7148, 19/256=0.0742 sum
+/// to exactly 256, and +128 provides rounding. This gives bit-exact
+/// results: pure white (255,255,255) -> 255, pure black (0,0,0) -> 0.
 ///
 /// # Gamma Contrast LUT
 ///
@@ -53,7 +54,7 @@
 ///   K  =  [-a, 1+4a, -a]
 ///         [ 0, -a,  0 ]
 ///
-/// where `a` is the sharpen amount (default 0.5). This is a 4-connected
+/// where `a` is the sharpen amount (default 1.5). This is a 4-connected
 /// (Von Neumann neighbourhood) kernel — we only look at the 4 direct
 /// neighbours, not diagonals. This is cheaper and produces cleaner results
 /// for text than an 8-connected kernel.
@@ -118,9 +119,9 @@ pub const PipelineConfig = struct {
 
     /// Laplacian sharpening strength.
     /// - 0.0 = disabled (passthrough)
-    /// - 0.5 = gentle sharpening (default, good for text)
+    /// - 1.5 = moderate sharpening (default, good for e-ink text)
     /// - 3.0 = aggressive sharpening (may introduce artifacts)
-    sharpen_amount: f32 = 0.5,
+    sharpen_amount: f32 = 1.5,
 };
 
 /// Stateful image processing pipeline.
@@ -250,10 +251,11 @@ pub const Pipeline = struct {
 /// 15 fps. Instead, we scale coefficients by 256 and use integer multiply
 /// with a right-shift:
 ///
-///   Y = (R*54 + G*183 + B*18) >> 8
+///   Y = (R*54 + G*183 + B*19 + 128) >> 8
 ///
-/// This gives us bit-exact results for black (0) and white (255), and
-/// stays within 1 grey level for everything in between.
+/// The +128 provides rounding and the coefficients sum to 256
+/// (54+183+19=256), giving bit-exact results for black (0) and
+/// white (255).
 ///
 /// # BGRA byte order
 ///
@@ -282,13 +284,15 @@ pub fn toGreyscale(frame: FrameBuffer, output: []u8) void {
         const r: u16 = frame.data[offset + 2];
         // Alpha (offset+3) ignored — screen captures are always opaque
 
-        // BT.709 integer approximation:
+        // BT.709 integer approximation with rounding:
         //   54/256  = 0.2109 (R weight, spec 0.2126)
         //   183/256 = 0.7148 (G weight, spec 0.7152)
-        //   18/256  = 0.0703 (B weight, spec 0.0722)
+        //   19/256  = 0.0742 (B weight, spec 0.0722)
         //
-        // Max value: 255*(54+183+18) = 255*255 = 65,025 — fits in u16.
-        const y: u16 = (r * 54 + g * 183 + b * 18) >> 8;
+        // Coefficients sum to 256 (54+183+19), so pure white maps to 255.
+        // +128 provides rounding (half of 256 divisor).
+        // Max value: 255*256+128 = 65,408 — fits in u16 (max 65,535).
+        const y: u16 = (r * 54 + g * 183 + b * 19 + 128) >> 8;
         output[i] = @intCast(y);
     }
 }
@@ -495,15 +499,13 @@ fn makeFrame(data: []const u8, width: u32, height: u32) FrameBuffer {
 
 test "greyscale: all white" {
     // White pixel: R=255, G=255, B=255 -> Y should be 255
-    // (255*54 + 255*183 + 255*18) >> 8 = 255*255 >> 8 = 65025 >> 8 = 254
-    // Note: integer approximation gives 254 for pure white due to
-    // truncation. (54+183+18 = 255, and 255*255 = 65025, 65025>>8 = 254)
-    // This is a known 0.4% error — imperceptible on e-ink.
+    // (255*54 + 255*183 + 255*19 + 128) >> 8 = (255*256 + 128) >> 8
+    // = (65280 + 128) >> 8 = 65408 >> 8 = 255
+    // Coefficients sum to 256 and +128 rounding gives exact white.
     const pixel = makeBgraPixel(255, 255, 255);
     var output: [1]u8 = undefined;
     toGreyscale(makeFrame(&pixel, 1, 1), &output);
-    // 255*255 >> 8 = 254
-    try testing.expectEqual(@as(u8, 254), output[0]);
+    try testing.expectEqual(@as(u8, 255), output[0]);
 }
 
 test "greyscale: all black" {
@@ -515,29 +517,29 @@ test "greyscale: all black" {
 }
 
 test "greyscale: pure red" {
-    // Pure red: R=255, G=0, B=0 -> Y = (255*54) >> 8 = 13770 >> 8 = 53
+    // Pure red: R=255, G=0, B=0 -> Y = (255*54 + 128) >> 8 = 13898 >> 8 = 54
     const pixel = makeBgraPixel(255, 0, 0);
     var output: [1]u8 = undefined;
     toGreyscale(makeFrame(&pixel, 1, 1), &output);
-    const expected: u8 = @intCast((255 * 54) >> 8);
+    const expected: u8 = @intCast((255 * 54 + 128) >> 8);
     try testing.expectEqual(expected, output[0]);
 }
 
 test "greyscale: pure green" {
-    // Pure green: R=0, G=255, B=0 -> Y = (255*183) >> 8 = 46665 >> 8 = 182
+    // Pure green: R=0, G=255, B=0 -> Y = (255*183 + 128) >> 8 = 46793 >> 8 = 182
     const pixel = makeBgraPixel(0, 255, 0);
     var output: [1]u8 = undefined;
     toGreyscale(makeFrame(&pixel, 1, 1), &output);
-    const expected: u8 = @intCast((255 * 183) >> 8);
+    const expected: u8 = @intCast((255 * 183 + 128) >> 8);
     try testing.expectEqual(expected, output[0]);
 }
 
 test "greyscale: pure blue" {
-    // Pure blue: R=0, G=0, B=255 -> Y = (255*18) >> 8 = 4590 >> 8 = 17
+    // Pure blue: R=0, G=0, B=255 -> Y = (255*19 + 128) >> 8 = 4973 >> 8 = 19
     const pixel = makeBgraPixel(0, 0, 255);
     var output: [1]u8 = undefined;
     toGreyscale(makeFrame(&pixel, 1, 1), &output);
-    const expected: u8 = @intCast((255 * 18) >> 8);
+    const expected: u8 = @intCast((255 * 19 + 128) >> 8);
     try testing.expectEqual(expected, output[0]);
 }
 
@@ -794,4 +796,73 @@ test "processFrame: updateConfig changes LUT" {
 
     // With gamma=2.0, mid-tones should be significantly brighter
     try testing.expect(val2 > val1);
+}
+
+// ----------------------------------------------------------------------------
+// Stride padding test (I7)
+// ----------------------------------------------------------------------------
+
+test "greyscale: stride with padding (stride = width*4 + 64)" {
+    // macOS CGDisplayStream often pads rows to 64-byte boundaries.
+    // Verify that toGreyscale correctly handles stride > width*4 by
+    // skipping padding bytes at the end of each row.
+    const w: u32 = 4;
+    const h: u32 = 3;
+    const stride: u32 = w * 4 + 64; // 16 + 64 = 80 bytes per row
+
+    // Allocate padded buffer: h rows of `stride` bytes each
+    var bgra_data: [3 * 80]u8 = undefined;
+
+    // Fill entire buffer with garbage (0xAA) to ensure padding is ignored
+    @memset(&bgra_data, 0xAA);
+
+    // Write actual pixels: row 0 = white, row 1 = black, row 2 = pure red
+    for (0..w) |col| {
+        // Row 0: white pixels (R=255, G=255, B=255)
+        const r0_off = 0 * stride + col * 4;
+        bgra_data[r0_off + 0] = 255; // B
+        bgra_data[r0_off + 1] = 255; // G
+        bgra_data[r0_off + 2] = 255; // R
+        bgra_data[r0_off + 3] = 255; // A
+
+        // Row 1: black pixels (R=0, G=0, B=0)
+        const r1_off = 1 * stride + col * 4;
+        bgra_data[r1_off + 0] = 0;
+        bgra_data[r1_off + 1] = 0;
+        bgra_data[r1_off + 2] = 0;
+        bgra_data[r1_off + 3] = 255;
+
+        // Row 2: pure red pixels (R=255, G=0, B=0)
+        const r2_off = 2 * stride + col * 4;
+        bgra_data[r2_off + 0] = 0; // B
+        bgra_data[r2_off + 1] = 0; // G
+        bgra_data[r2_off + 2] = 255; // R
+        bgra_data[r2_off + 3] = 255; // A
+    }
+
+    const frame = FrameBuffer{
+        .data = &bgra_data,
+        .width = w,
+        .height = h,
+        .stride = stride,
+    };
+
+    var output: [12]u8 = undefined; // 4*3 = 12 pixels
+    toGreyscale(frame, &output);
+
+    // Row 0: all white -> 255
+    for (0..w) |col| {
+        try testing.expectEqual(@as(u8, 255), output[0 * w + col]);
+    }
+
+    // Row 1: all black -> 0
+    for (0..w) |col| {
+        try testing.expectEqual(@as(u8, 0), output[1 * w + col]);
+    }
+
+    // Row 2: pure red -> (255*54 + 128) >> 8 = 54
+    const expected_red: u8 = @intCast((255 * 54 + 128) >> 8);
+    for (0..w) |col| {
+        try testing.expectEqual(expected_red, output[2 * w + col]);
+    }
 }

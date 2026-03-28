@@ -45,18 +45,21 @@ pub const EnableConfig = extern struct {
 // ── Exported functions ────────────────────────────────────────────
 
 /// Convert BGRA frame to greyscale. Caller provides output buffer.
+/// `stride` is bytes per row (may be larger than width*4 for alignment padding).
 export fn enable_to_greyscale(
     bgra: [*]const u8,
     grey: [*]u8,
     width: u32,
     height: u32,
+    stride: u32,
 ) void {
     const pixel_count = @as(usize, width) * @as(usize, height);
+    const total_bytes = @as(usize, stride) * @as(usize, height);
     const frame = pipeline.FrameBuffer{
-        .data = bgra[0 .. pixel_count * 4],
+        .data = bgra[0..total_bytes],
         .width = width,
         .height = height,
-        .stride = width * 4,
+        .stride = stride,
     };
     const output = grey[0..pixel_count];
     pipeline.toGreyscale(frame, output);
@@ -91,9 +94,9 @@ test "ffi greyscale export callable" {
     // White pixel: BGRA = (255, 255, 255, 255)
     const bgra = [_]u8{ 255, 255, 255, 255 };
     var grey = [_]u8{0};
-    enable_to_greyscale(&bgra, &grey, 1, 1);
-    // Should be ~255 (white)
-    try std.testing.expect(grey[0] >= 254);
+    enable_to_greyscale(&bgra, &grey, 1, 1, 4);
+    // Should be exactly 255 (white) with corrected coefficients
+    try std.testing.expectEqual(@as(u8, 255), grey[0]);
 }
 
 test "ffi xor delta export callable" {
