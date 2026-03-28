@@ -1,0 +1,120 @@
+<!--
+  AndroidManifest.xml — e-nable Mirror App Manifest
+
+  # What is this file?
+
+  Every Android app must have an AndroidManifest.xml at the root of its
+  source set. It declares:
+    1. The app's components (activities, services)
+    2. Required permissions
+    3. Hardware/software features the app needs
+    4. How the app should be launched
+
+  # Permissions Strategy
+
+  This app needs ZERO dangerous permissions. All communication happens
+  over a localhost TCP socket (tunneled via ADB over USB-C). The Android
+  permission model only restricts network access to external hosts, not
+  localhost. The INTERNET permission is technically needed for any socket
+  use, but it's a "normal" permission (auto-granted, no user prompt).
+
+  # Why a foreground service?
+
+  Android aggressively kills background processes to save battery. Our
+  renderer must stay alive while mirroring is active. A foreground service
+  with a persistent notification tells Android "this app is doing important
+  work, don't kill it." This is the same pattern used by music players,
+  navigation apps, and screen recording tools.
+-->
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      INTERNET: Required for TCP socket communication, even on localhost.
+      This is a "normal" permission — auto-granted at install time,
+      no user prompt required.
+    -->
+    <permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!--
+      FOREGROUND_SERVICE: Required to run a service with a persistent
+      notification (keeps the renderer alive during mirroring).
+      Also a "normal" permission — auto-granted.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+    <!--
+      FOREGROUND_SERVICE_SPECIAL_USE: Android 14+ requires declaring
+      the category of foreground service. "specialUse" covers our
+      screen rendering use case which doesn't fit the standard
+      categories (media, location, etc.).
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!--
+      WAKE_LOCK: Prevents the CPU from sleeping while frames are being
+      received and rendered. Without this, Android would suspend the CPU
+      during "idle" periods between frames, causing dropped frames and
+      input lag. The wake lock is held only while mirroring is active.
+    -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <application
+        android:allowBackup="false"
+        android:label="e-nable Mirror"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+
+        <!--
+          MirrorActivity: The main (and only) activity.
+
+          configChanges: Tells Android NOT to recreate the activity when
+          orientation, screen size, or keyboard state changes. Instead,
+          the activity handles these changes itself. This prevents the
+          costly destroy-recreate cycle that would interrupt mirroring.
+
+          screenOrientation: Locked to landscape because e-ink monitors
+          are used in landscape orientation when mirroring a Mac desktop.
+          The Boox Note Air 3 C is 10.3" in landscape.
+
+          launchMode: singleTask ensures only one instance exists.
+          Re-launching from the home screen brings back the existing
+          instance instead of creating a duplicate.
+
+          exported: true allows the activity to be launched from the
+          launcher, ADB, or other apps.
+        -->
+        <activity
+            android:name=".MirrorActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:screenOrientation="landscape"
+            android:launchMode="singleTask"
+            android:exported="true">
+
+            <intent-filter>
+                <!-- MAIN + LAUNCHER = appears in the app drawer -->
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          RendererService: Foreground service that manages the TCP
+          connection and frame rendering pipeline.
+
+          The service runs independently of the activity lifecycle.
+          If the user presses Home, the service continues receiving
+          and rendering frames. The activity is just a thin UI shell
+          that displays the rendered SurfaceView.
+
+          foregroundServiceType: Android 14+ requires declaring the
+          service type. "specialUse" covers custom rendering workloads.
+        -->
+        <service
+            android:name=".RendererService"
+            android:foregroundServiceType="specialUse"
+            android:exported="false" />
+
+    </application>
+</manifest>
