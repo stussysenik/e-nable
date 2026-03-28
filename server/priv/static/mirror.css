@@ -1,0 +1,257 @@
+/* ==========================================================================
+ * mirror.css — E-ink optimized styles for the screen mirror viewer
+ * ==========================================================================
+ *
+ * E-ink display characteristics that drive every decision here:
+ *
+ * - SLOW REFRESH: Full refresh takes 300-500ms, partial ~100ms.
+ *   Animations, transitions, and frequent repaints cause ghosting.
+ *
+ * - HIGH CONTRAST: E-ink excels at sharp black-on-white. Greys are
+ *   rendered via dithering and look muddy. We stick to pure #000/#fff.
+ *
+ * - NO BACKLIGHT: Unlike LCDs, e-ink is reflective. Subpixel font
+ *   rendering (designed for backlit RGB subpixels) looks terrible.
+ *
+ * - TOUCH LATENCY: Boox stylus/touch has ~50ms latency on top of
+ *   the display refresh. Keep the UI simple and forgiving.
+ *
+ * Rule of thumb: if it would look good printed on paper, it works on e-ink.
+ * ========================================================================== */
+
+/* --- Reset & Global --- */
+
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+
+  /*
+   * Disable subpixel antialiasing globally.
+   * E-ink panels have no RGB subpixels — subpixel rendering produces
+   * color fringing that the greyscale display can't reproduce.
+   */
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;              /* No scroll bars — canvas fills the viewport */
+  background: #fff;
+  color: #000;
+  font-family: "Courier New", Courier, monospace;
+
+  /*
+   * Prevent pull-to-refresh and overscroll bounce on mobile/Boox.
+   * These cause full-screen repaints that ghost badly on e-ink.
+   */
+  overscroll-behavior: none;
+
+  /*
+   * Prevent accidental text selection while using stylus on the canvas.
+   */
+  -webkit-user-select: none;
+  user-select: none;
+
+  /*
+   * Prevent iOS Safari from auto-zooming on double-tap.
+   */
+  touch-action: manipulation;
+}
+
+
+/* --- Canvas --- */
+
+#mirror-canvas {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+
+  /*
+   * image-rendering: pixelated
+   *   When the canvas resolution doesn't match the display resolution,
+   *   the browser will use nearest-neighbor scaling instead of bilinear.
+   *   This keeps individual pixels sharp — critical for e-ink where
+   *   blurring from interpolation causes ghosting artifacts.
+   *
+   * We declare both the standard and prefixed versions for coverage.
+   */
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  image-rendering: -moz-crisp-edges;
+
+  /*
+   * Remove the default canvas focus outline. We handle focus
+   * indication ourselves in the toolbar status.
+   */
+  outline: none;
+}
+
+
+/* --- Toolbar --- */
+
+.toolbar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+
+  /*
+   * Pure white background with hard black border.
+   * No transparency, no blur, no gradients — all of these cause
+   * partial-refresh artifacts on e-ink.
+   */
+  background: #fff;
+  border-top: 2px solid #000;
+
+  padding: 6px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+
+  font-size: 13px;
+  line-height: 1;
+
+  /*
+   * Transition: we use a simple opacity toggle (no animation).
+   * The class .toolbar--hidden sets display:none after a timeout.
+   * No CSS transitions — they cause continuous repaints.
+   */
+}
+
+.toolbar--hidden {
+  display: none;
+}
+
+
+/* --- Toolbar items --- */
+
+.toolbar__section {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.toolbar__item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+
+/* --- Status indicator --- */
+
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border: 1px solid #000;
+  border-radius: 0;                 /* Square dot — circles dither poorly on e-ink */
+}
+
+.status-dot--connecting {
+  background: #999;                 /* Grey = connecting */
+}
+
+.status-dot--connected {
+  background: #000;                 /* Black = connected (filled square) */
+}
+
+.status-dot--disconnected {
+  background: #fff;                 /* White = disconnected (hollow square) */
+}
+
+
+/* --- Buttons --- */
+
+.toolbar__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  min-height: 28px;
+
+  background: #fff;
+  color: #000;
+  border: 2px solid #000;
+  border-radius: 0;                 /* Sharp corners for e-ink */
+
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+
+  /*
+   * No hover effects, no focus rings with transitions.
+   * E-ink users interact via touch/stylus — hover states are invisible.
+   */
+}
+
+.toolbar__btn:active {
+  background: #000;
+  color: #fff;
+}
+
+
+/* --- Connection overlay (shown before first frame) --- */
+
+.connect-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+
+  background: #fff;
+  color: #000;
+}
+
+.connect-overlay--hidden {
+  display: none;
+}
+
+.connect-overlay__title {
+  font-size: 24px;
+  font-weight: bold;
+  letter-spacing: 2px;
+}
+
+.connect-overlay__status {
+  font-size: 16px;
+}
+
+.connect-overlay__info {
+  font-size: 12px;
+  color: #666;
+  margin-top: 8px;
+}
+
+
+/* --- Responsive adjustments --- */
+
+/*
+ * On very small viewports (unlikely for Boox Tab Ultra at 2480x1860,
+ * but possible if used on a phone for testing), shrink the toolbar.
+ */
+@media (max-height: 400px) {
+  .toolbar {
+    padding: 4px 8px;
+    font-size: 11px;
+  }
+
+  .toolbar__btn {
+    padding: 2px 6px;
+    min-height: 22px;
+    font-size: 11px;
+  }
+}

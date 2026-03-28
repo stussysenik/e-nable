@@ -1,4 +1,4 @@
-.PHONY: all clean test zig-core macos android
+.PHONY: all clean test zig-core macos android setup start stop
 
 # ── Build targets ──────────────────────────────────────────────
 
@@ -12,6 +12,23 @@ macos: zig-core
 
 android: zig-core
 	cd android && ./gradlew assembleDebug
+
+# ── Dev workflow targets ───────────────────────────────────────
+
+setup:
+	cd server && mix deps.get
+	cd macos && swift build
+
+start:
+	@echo "Starting e-nable..."
+	@cd server && mix phx.server &
+	@sleep 2
+	@cd macos && swift run EnableCLI
+
+stop:
+	@pkill -f "mix phx.server" || true
+	@pkill -f "EnableCLI" || true
+	@echo "e-nable stopped"
 
 # ── Test targets ───────────────────────────────────────────────
 

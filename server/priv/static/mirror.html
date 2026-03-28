@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>e-nable mirror</title>
+
+  <!--
+    E-ink meta tags:
+
+    - viewport: maximum-scale=1.0, user-scalable=no
+      Prevents pinch-to-zoom which causes expensive full-page repaints
+      on e-ink. The canvas handles its own scaling.
+
+    - theme-color: #ffffff
+      Tells mobile browsers to use a white chrome, matching our UI.
+      On Boox, this reduces visual contrast between chrome and content.
+
+    - apple-mobile-web-app-capable: yes
+      Allows "Add to Home Screen" on iOS/Boox to launch without
+      browser chrome, giving us the full display for mirroring.
+  -->
+  <meta name="theme-color" content="#ffffff">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="mobile-web-app-capable" content="yes">
+
+  <link rel="stylesheet" href="/mirror.css">
+</head>
+<body>
+  <!--
+    Canvas: the entire mirrored screen renders here.
+
+    We set tabindex="0" so the canvas can receive keyboard events
+    when focused (useful for sending keyboard input to the Mac).
+    The canvas resolution is set dynamically by mirror.js when the
+    first frame arrives — the CSS sizes it to fill the viewport.
+  -->
+  <canvas id="mirror-canvas" tabindex="0"></canvas>
+
+  <!--
+    Connection overlay: shown before the first frame arrives.
+    Provides visual feedback that the client is working and waiting
+    for the server to start sending frames. Hidden once the first
+    keyframe is rendered.
+  -->
+  <div class="connect-overlay">
+    <div class="connect-overlay__title">e-nable</div>
+    <div class="connect-overlay__status" id="overlay-status">Connecting...</div>
+    <div class="connect-overlay__info" id="overlay-info">
+      Establishing WebSocket connection...
+    </div>
+  </div>
+
+  <!--
+    Toolbar: floating bar at the bottom edge.
+    Auto-hides after 5 seconds of inactivity to prevent ghosting
+    on e-ink displays. Tap anywhere or press Esc to show it again.
+  -->
+  <div class="toolbar">
+    <div class="toolbar__section">
+      <div class="toolbar__item">
+        <span class="status-dot status-dot--connecting" id="status-dot"></span>
+        <span id="status-text">Connecting...</span>
+      </div>
+    </div>
+
+    <div class="toolbar__section">
+      <div class="toolbar__item">
+        <span id="fps-display">0 fps</span>
+      </div>
+      <div class="toolbar__item">
+        <span id="res-display">--x--</span>
+      </div>
+      <button class="toolbar__btn" id="fullscreen-btn" type="button">
+        [ ] Fullscreen
+      </button>
+    </div>
+  </div>
+
+  <!--
+    Script loaded at end of body for two reasons:
+    1. DOM elements are available without waiting for DOMContentLoaded
+    2. Does not block initial paint of the connection overlay
+  -->
+  <script src="/mirror.js"></script>
+</body>
+</html>

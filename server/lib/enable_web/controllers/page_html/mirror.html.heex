@@ -1,0 +1,117 @@
+<div id="mirror-viewer" style="display: flex; flex-direction: column; align-items: center; background: #000; min-height: 100vh; padding: 20px;">
+  <h1 style="color: #fff; font-family: monospace; margin-bottom: 10px;">e-nable mirror</h1>
+
+  <div id="stats" style="color: #888; font-family: monospace; font-size: 12px; margin-bottom: 10px;">
+    Waiting for connection...
+  </div>
+
+  <canvas id="mirror-canvas" style="border: 1px solid #333; max-width: 100%; image-rendering: pixelated;">
+  </canvas>
+</div>
+
+<script>
+  // Phoenix Channel connection for receiving screen frames.
+  // This connects to the UserSocket and joins the mirror:lobby channel.
+  // Frames arrive as base64-encoded binary pushed from the Elixir server.
+
+  // We'll use the Phoenix JS client bundled with the framework.
+  // For now, a minimal WebSocket implementation that speaks Phoenix protocol.
+
+  (function() {
+    const PHOENIX_VSN = "2.0.0";
+    const canvas = document.getElementById("mirror-canvas");
+    const ctx = canvas.getContext("2d");
+    const statsEl = document.getElementById("stats");
+    let frameCount = 0;
+
+    // Connect to the Phoenix socket
+    const wsUrl = `ws://${window.location.host}/socket/websocket?vsn=${PHOENIX_VSN}`;
+    let ws;
+    let joinRef = 1;
+    let ref = 1;
+    let heartbeatTimer;
+
+    function connect() {
+      ws = new WebSocket(wsUrl);
+      ws.onopen = () => {
+        console.log("[mirror] Connected to socket");
+        // Join the mirror:lobby channel
+        send(joinRef.toString(), (ref++).toString(), "mirror:lobby", "phx_join", {});
+        // Start heartbeat
+        heartbeatTimer = setInterval(() => {
+          send(null, (ref++).toString(), "phoenix", "heartbeat", {});
+        }, 30000);
+      };
+
+      ws.onmessage = (event) => {
+        const [joinRef, msgRef, topic, eventName, payload] = JSON.parse(event.data);
+        handleMessage(topic, eventName, payload);
+      };
+
+      ws.onclose = () => {
+        console.log("[mirror] Disconnected, reconnecting...");
+        clearInterval(heartbeatTimer);
+        statsEl.textContent = "Disconnected. Reconnecting...";
+        setTimeout(connect, 2000);
+      };
+
+      ws.onerror = (err) => {
+        console.error("[mirror] WebSocket error:", err);
+      };
+    }
+
+    function send(joinRef, ref, topic, event, payload) {
+      ws.send(JSON.stringify([joinRef, ref, topic, event, payload]));
+    }
+
+    function handleMessage(topic, event, payload) {
+      if (event === "phx_reply" && payload.status === "ok") {
+        statsEl.textContent = "Connected. Waiting for frames...";
+        return;
+      }
+
+      if (event === "frame") {
+        renderFrame(payload);
+        return;
+      }
+
+      if (event === "stats") {
+        updateStats(payload);
+        return;
+      }
+    }
+
+    function renderFrame(frame) {
+      const binary = atob(frame.data);
+      const blob = new Blob([Uint8Array.from(binary, c => c.charCodeAt(0))], { type: "image/png" });
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => {
+        if (canvas.width !== img.width || canvas.height !== img.height) {
+          canvas.width = img.width;
+          canvas.height = img.height;
+        }
+        ctx.drawImage(img, 0, 0);
+        URL.revokeObjectURL(url);
+        frameCount++;
+      };
+      img.src = url;
+    }
+
+    function updateStats(stats) {
+      statsEl.textContent =
+        `FPS: ${stats.fps || 0} | ` +
+        `${formatBytes(stats.bytes_per_sec || 0)}/s | ` +
+        `Frames: ${stats.total_frames || 0} | ` +
+        `${stats.connected ? "Connected" : "Disconnected"}`;
+    }
+
+    function formatBytes(bytes) {
+      if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + " MB";
+      if (bytes >= 1024) return (bytes / 1024).toFixed(1) + " KB";
+      return bytes + " B";
+    }
+
+    connect();
+  })();
+</script>

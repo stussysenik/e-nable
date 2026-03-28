@@ -45,3 +45,4 @@ dist/
 *.dylib
 *.so
 *.a
+erl_crash.dump
