@@ -17,6 +17,9 @@
 
 ## Why
 
+![Demo](demo.gif)
+
+
 E-ink displays are calm. No blue light. No PWM flicker. No eye strain. They're paper that updates.
 
 We wanted to use a Boox Note Air 3 C as a secondary Mac display for writing, reading, and focused work. The commercial options are either expensive (SuperMirror, $29, closed-source) or built for different hardware (Daylight DC-1's reflective LCD, not real e-ink).
